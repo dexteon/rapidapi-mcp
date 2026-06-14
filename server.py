@@ -1,0 +1,168 @@
+"""RapidAPI MCP — one server exposing ALL of the maintainer's RapidAPI subscriptions.
+
+RapidAPI shares a single x-rapidapi-key across the whole app, so a single proxy
+tool can reach any of the ~128 subscribed APIs. Discovery (search/describe) +
+execution (call) cover the entire catalog with 4 tools.
+
+Run: python server.py   (stdio MCP server)
+
+Env:
+  RAPIDAPI_KEY      — required. Your RapidAPI app key. (ROTATE the old shared key —
+                      it was flagged compromised; set the fresh one here.)
+  RAPIDAPI_CATALOG  — optional path to rapidapi_catalog.json
+                      (default: %USERPROFILE%/Desktop/rapidapi_catalog.json)
+"""
+import json
+import os
+from pathlib import Path
+from typing import Any, Optional
+
+import httpx
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("rapidapi-mcp")
+
+DEFAULT_CATALOG = Path(os.path.expanduser("~")) / "Desktop" / "rapidapi_catalog.json"
+CATALOG_PATH = Path(os.environ.get("RAPIDAPI_CATALOG", str(DEFAULT_CATALOG)))
+
+
+def _load() -> dict:
+    with open(CATALOG_PATH, encoding="utf-8") as f:
+        data = json.load(f)
+    return data.get("apis", data)
+
+
+try:
+    APIS: dict = _load()
+except Exception as exc:  # surfaced via tools rather than crashing import
+    APIS = {}
+    _LOAD_ERROR = str(exc)
+else:
+    _LOAD_ERROR = None
+
+
+def _key() -> str | None:
+    return os.environ.get("RAPIDAPI_KEY") or None
+
+
+def _summary(slug: str, a: dict) -> dict:
+    bp = a.get("basic_plan") or {}
+    return {
+        "slug": slug,
+        "name": a.get("name"),
+        "category": a.get("category"),
+        "host": a.get("host"),
+        "search_for": a.get("search_for"),
+        "monthly_cap": bp.get("monthly_cap"),
+        "usage_pct": a.get("dashboard_usage_pct"),
+    }
+
+
+@mcp.tool()
+def rapidapi_categories() -> dict:
+    """List RapidAPI categories with how many subscribed APIs each holds."""
+    if _LOAD_ERROR:
+        return {"error": f"catalog not loaded: {_LOAD_ERROR}", "path": str(CATALOG_PATH)}
+    counts: dict[str, int] = {}
+    for a in APIS.values():
+        counts[a.get("category", "other")] = counts.get(a.get("category", "other"), 0) + 1
+    return {"total_apis": len(APIS), "categories": dict(sorted(counts.items()))}
+
+
+@mcp.tool()
+def rapidapi_search(query: str = "", category: str = "", limit: int = 25) -> list[dict]:
+    """Find subscribed APIs by keyword and/or category.
+
+    query matches name/slug/vendor/search_for/notes (case-insensitive).
+    Returns lightweight summaries; use rapidapi_describe(slug) for endpoints.
+    """
+    if _LOAD_ERROR:
+        return [{"error": f"catalog not loaded: {_LOAD_ERROR}", "path": str(CATALOG_PATH)}]
+    q = query.lower().strip()
+    cat = category.lower().strip()
+    out = []
+    for slug, a in APIS.items():
+        if cat and a.get("category", "").lower() != cat:
+            continue
+        if q:
+            blob = " ".join(str(a.get(k, "")) for k in
+                            ("name", "slug", "vendor", "search_for", "notes", "returns")).lower()
+            if q not in blob and q not in slug.lower():
+                continue
+        out.append(_summary(slug, a))
+    return out[:limit]
+
+
+@mcp.tool()
+def rapidapi_describe(slug: str) -> dict:
+    """Full detail for one subscribed API: host, endpoints (method/path/purpose/
+    key_params), quota, notes. Use before rapidapi_call."""
+    if _LOAD_ERROR:
+        return {"error": f"catalog not loaded: {_LOAD_ERROR}", "path": str(CATALOG_PATH)}
+    a = APIS.get(slug)
+    if not a:
+        hits = [s for s in APIS if slug.lower() in s.lower()]
+        return {"error": f"unknown slug '{slug}'", "did_you_mean": hits[:8]}
+    return {
+        "slug": slug, "name": a.get("name"), "vendor": a.get("vendor"),
+        "category": a.get("category"), "host": a.get("host"),
+        "rapidapi_url": a.get("rapidapi_url"),
+        "basic_plan": a.get("basic_plan"), "usage_pct": a.get("dashboard_usage_pct"),
+        "search_for": a.get("search_for"), "returns": a.get("returns"),
+        "notes": a.get("notes"), "endpoints": a.get("endpoints", []),
+    }
+
+
+@mcp.tool()
+def rapidapi_call(slug: str = "", path: str = "/", method: str = "GET",
+                  params: Optional[dict] = None, json_body: Optional[dict] = None,
+                  host: str = "", max_chars: int = 12000) -> dict:
+    """Call any subscribed RapidAPI endpoint through the shared key.
+
+    Provide slug (resolves host from catalog) OR an explicit host. path is the
+    endpoint path (e.g. '/active-ats-7d'). params = query string; json_body =
+    POST body. Response is truncated to max_chars.
+    """
+    key = _key()
+    if not key:
+        return {"error": "RAPIDAPI_KEY not set in env. Rotate the compromised key "
+                         "at rapidapi.com/developer/security and set the fresh value."}
+    resolved_host = host
+    if not resolved_host:
+        a = APIS.get(slug)
+        if not a:
+            return {"error": f"unknown slug '{slug}' and no host given"}
+        resolved_host = a.get("host")
+    if not resolved_host:
+        return {"error": "could not resolve host"}
+
+    url = f"https://{resolved_host}{path if path.startswith('/') else '/' + path}"
+    headers = {"x-rapidapi-host": resolved_host, "x-rapidapi-key": key}
+    try:
+        with httpx.Client(timeout=40) as c:
+            r = c.request(method.upper(), url, params=params or None,
+                          json=json_body or None, headers=headers)
+    except httpx.HTTPError as exc:
+        return {"error": f"request failed: {exc}", "url": url}
+
+    body: Any
+    ctype = r.headers.get("content-type", "")
+    if "json" in ctype:
+        try:
+            body = r.json()
+        except Exception:
+            body = r.text
+    else:
+        body = r.text
+    text = body if isinstance(body, str) else json.dumps(body)
+    truncated = len(text) > max_chars
+    return {
+        "status": r.status_code, "host": resolved_host, "url": url,
+        "truncated": truncated,
+        "body": (text[:max_chars] if isinstance(body, str) else body)
+        if not truncated else text[:max_chars],
+    }
+
+
+if __name__ == "__main__":
+    mcp.run()
