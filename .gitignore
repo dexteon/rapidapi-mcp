@@ -5,3 +5,4 @@ venv/
 *.log
 .env
 rapidapi_catalog.json
+.rapidapi_mcp_usage.json

@@ -8,9 +8,17 @@ server needed.
 - `rapidapi_categories()` — categories + counts.
 - `rapidapi_search(query, category, limit)` — find subscribed APIs by keyword/category.
 - `rapidapi_describe(slug)` — host, endpoints (method/path/purpose/key_params), quota, notes.
-- `rapidapi_call(slug, path, method, params, json_body, host)` — proxy any endpoint.
+- `rapidapi_call(slug, path, method, params, json_body, host, force)` — proxy any endpoint, quota-guarded.
+- `rapidapi_quota(slug, near_cap_only)` — estimated monthly usage/remaining per API.
 
 Typical flow: `search` → `describe` → `call`.
+
+## Quota guard
+Each `rapidapi_call` checks the catalog `monthly_cap` + `dashboard_usage_pct` snapshot
+plus a local per-slug counter (persisted, resets monthly). Hard-capped APIs are
+**blocked before the request** once estimated usage hits the cap — override with
+`force=true`. The snapshot is point-in-time (last harvest), so estimates are a floor,
+not live truth. Counter file: `RAPIDAPI_USAGE_FILE` (default `~/.rapidapi_mcp_usage.json`).
 
 ## Run
 ```

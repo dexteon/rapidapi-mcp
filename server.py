@@ -20,6 +20,8 @@ from typing import Any, Optional
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+import quota
+
 mcp = FastMCP("rapidapi-mcp")
 
 DEFAULT_CATALOG = Path(os.path.expanduser("~")) / "Desktop" / "rapidapi_catalog.json"
@@ -116,25 +118,36 @@ def rapidapi_describe(slug: str) -> dict:
 @mcp.tool()
 def rapidapi_call(slug: str = "", path: str = "/", method: str = "GET",
                   params: Optional[dict] = None, json_body: Optional[dict] = None,
-                  host: str = "", max_chars: int = 12000) -> dict:
+                  host: str = "", max_chars: int = 12000, force: bool = False) -> dict:
     """Call any subscribed RapidAPI endpoint through the shared key.
 
     Provide slug (resolves host from catalog) OR an explicit host. path is the
     endpoint path (e.g. '/active-ats-7d'). params = query string; json_body =
     POST body. Response is truncated to max_chars.
+
+    Quota-guarded: hard-capped APIs are blocked once estimated usage hits the
+    monthly cap (override with force=true). Successful calls are counted locally.
     """
     key = _key()
     if not key:
         return {"error": "RAPIDAPI_KEY not set in env. Rotate the compromised key "
                          "at rapidapi.com/developer/security and set the fresh value."}
     resolved_host = host
+    a = APIS.get(slug)
     if not resolved_host:
-        a = APIS.get(slug)
         if not a:
             return {"error": f"unknown slug '{slug}' and no host given"}
         resolved_host = a.get("host")
     if not resolved_host:
         return {"error": "could not resolve host"}
+
+    # Quota guard (only when we know the slug → can look up its cap)
+    quota_note = None
+    if a:
+        allowed, quota_note = quota.check(a, slug)
+        if not allowed and not force:
+            return {"error": "quota guard blocked call", "detail": quota_note,
+                    "quota": quota.estimate(a, slug)}
 
     url = f"https://{resolved_host}{path if path.startswith('/') else '/' + path}"
     headers = {"x-rapidapi-host": resolved_host, "x-rapidapi-key": key}
@@ -154,14 +167,47 @@ def rapidapi_call(slug: str = "", path: str = "/", method: str = "GET",
             body = r.text
     else:
         body = r.text
+    # Count successful, authenticated calls against local quota (2xx/4xx hit the
+    # plan; skip 401/403 auth failures which usually don't consume quota).
+    if a and r.status_code not in (401, 403):
+        quota.record(slug)
+        quota_note = (quota.check(a, slug)[1])
+
     text = body if isinstance(body, str) else json.dumps(body)
     truncated = len(text) > max_chars
     return {
         "status": r.status_code, "host": resolved_host, "url": url,
-        "truncated": truncated,
+        "truncated": truncated, "quota": quota_note,
         "body": (text[:max_chars] if isinstance(body, str) else body)
         if not truncated else text[:max_chars],
     }
+
+
+@mcp.tool()
+def rapidapi_quota(slug: str = "", near_cap_only: bool = False) -> Any:
+    """Estimated monthly quota per API (catalog snapshot + local calls this month).
+
+    One slug → that API's picture. No slug → all APIs with a known cap
+    (set near_cap_only=true to show only those <=20% remaining)."""
+    if _LOAD_ERROR:
+        return {"error": f"catalog not loaded: {_LOAD_ERROR}"}
+    if slug:
+        a = APIS.get(slug)
+        if not a:
+            return {"error": f"unknown slug '{slug}'"}
+        return {"slug": slug, **quota.estimate(a, slug)}
+    out = []
+    for s, a in APIS.items():
+        q = quota.estimate(a, s)
+        if q["cap"] is None:
+            continue
+        if near_cap_only and q["remaining"] > max(1, q["cap"] // 5):
+            continue
+        out.append({"slug": s, "name": a.get("name"), "hard": q["hard"],
+                    "cap": q["cap"], "est_used": q["est_used"],
+                    "remaining": q["remaining"]})
+    out.sort(key=lambda x: (x["remaining"] if x["remaining"] is not None else 9e9))
+    return out
 
 
 if __name__ == "__main__":
