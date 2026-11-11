@@ -1,4 +1,4 @@
-"""RapidAPI MCP — one server exposing ALL of the maintainer's RapidAPI subscriptions.
+"""RapidAPI MCP — one server exposing ALL of your RapidAPI subscriptions.
 
 RapidAPI shares a single x-rapidapi-key across the whole app, so a single proxy
 tool can reach any of the ~128 subscribed APIs. Discovery (search/describe) +
@@ -22,7 +22,7 @@ from mcp.server.fastmcp import FastMCP
 
 import quota
 
-mcp = FastMCP("rapidapi-mcp", instructions="one server exposing all the maintainer RapidAPI subscriptions")
+mcp = FastMCP("rapidapi-mcp", instructions="one server exposing all of your RapidAPI subscriptions")
 
 DEFAULT_CATALOG = Path(os.path.expanduser("~")) / "Desktop" / "rapidapi_catalog.json"
 CATALOG_PATH = Path(os.environ.get("RAPIDAPI_CATALOG", str(DEFAULT_CATALOG)))

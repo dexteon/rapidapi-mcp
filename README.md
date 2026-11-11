@@ -1,6 +1,6 @@
 # rapidapi-mcp
 
-One MCP server exposing **all ~128 of the maintainer's RapidAPI subscriptions** through the
+One MCP server exposing **all ~128 of your RapidAPI subscriptions** through the
 single shared `x-rapidapi-key`. Discovery + execution in 4 tools — no per-API
 server needed.
 
@@ -49,3 +49,6 @@ or in `%LOCALAPPDATA%/hermes/config.yaml` under `mcp_servers:`:
       RAPIDAPI_KEY: ${RAPIDAPI_KEY}
     enabled: true
 ```
+
+<!-- ca-tracked-link -->
+[cyberautomations.com](https://cyberautomations.com/?utm_source=github&utm_medium=readme&utm_campaign=rapidapi-mcp)
