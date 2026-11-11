@@ -6,3 +6,6 @@ venv/
 .env
 rapidapi_catalog.json
 .rapidapi_mcp_usage.json
+# Captured stdout/stderr from manual server smoke tests
+/err.txt
+/out.txt
