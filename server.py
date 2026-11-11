@@ -22,7 +22,7 @@ from mcp.server.fastmcp import FastMCP
 
 import quota
 
-mcp = FastMCP("rapidapi-mcp")
+mcp = FastMCP("rapidapi-mcp", instructions="one server exposing all the maintainer RapidAPI subscriptions")
 
 DEFAULT_CATALOG = Path(os.path.expanduser("~")) / "Desktop" / "rapidapi_catalog.json"
 CATALOG_PATH = Path(os.environ.get("RAPIDAPI_CATALOG", str(DEFAULT_CATALOG)))
