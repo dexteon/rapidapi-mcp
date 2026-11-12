@@ -14,6 +14,7 @@ Env:
 """
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -45,6 +46,19 @@ else:
 
 def _key() -> str | None:
     return os.environ.get("RAPIDAPI_KEY") or None
+
+
+# The x-rapidapi-key header must only ever go to a RapidAPI gateway host.
+# A host is accepted only if it is a bare DNS name ending in .p.rapidapi.com
+# (no scheme, port, path, userinfo, query or fragment characters).
+_RAPIDAPI_HOST_RE = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+p\.rapidapi\.com$")
+
+
+def is_allowed_host(host: Any) -> bool:
+    """True only for a bare hostname under .p.rapidapi.com."""
+    if not isinstance(host, str) or not host or len(host) > 253:
+        return False
+    return bool(_RAPIDAPI_HOST_RE.fullmatch(host.lower()))
 
 
 def _summary(slug: str, a: dict) -> dict:
@@ -140,6 +154,11 @@ def rapidapi_call(slug: str = "", path: str = "/", method: str = "GET",
         resolved_host = a.get("host")
     if not resolved_host:
         return {"error": "could not resolve host"}
+    if not is_allowed_host(resolved_host):
+        return {"error": "host rejected: only *.p.rapidapi.com hosts may receive "
+                         "the RapidAPI key", "host": resolved_host}
+    if not path.startswith("/"):
+        path = "/" + path
 
     # Quota guard (only when we know the slug → can look up its cap)
     quota_note = None
@@ -149,10 +168,13 @@ def rapidapi_call(slug: str = "", path: str = "/", method: str = "GET",
             return {"error": "quota guard blocked call", "detail": quota_note,
                     "quota": quota.estimate(a, slug)}
 
-    url = f"https://{resolved_host}{path if path.startswith('/') else '/' + path}"
+    url = f"https://{resolved_host}{path}"
+    if httpx.URL(url).host != resolved_host.lower():
+        return {"error": "host rejected: built URL does not point at the RapidAPI host",
+                "host": resolved_host}
     headers = {"x-rapidapi-host": resolved_host, "x-rapidapi-key": key}
     try:
-        with httpx.Client(timeout=40) as c:
+        with httpx.Client(timeout=40, follow_redirects=False) as c:
             r = c.request(method.upper(), url, params=params or None,
                           json=json_body or None, headers=headers)
     except httpx.HTTPError as exc:
